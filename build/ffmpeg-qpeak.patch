@@ -1,0 +1,77 @@
+diff --git a/libavfilter/af_volumedetect.c b/libavfilter/af_volumedetect.c
+index 43c1ebf02c..d5a153989a 100644
+--- a/libavfilter/af_volumedetect.c
++++ b/libavfilter/af_volumedetect.c
+@@ -25,14 +25,27 @@
+ #include "internal.h"
+ 
+ typedef struct VolDetectContext {
++    const AVClass *class;       /**< class for AVOptions */
+     /**
+      * Number of samples at each PCM value.
+      * histogram[0x8000 + i] is the number of samples at value i.
+      * The extra element is there for symmetry.
+      */
+     uint64_t histogram[0x10001];
++    int sample_rate;
++    int integr_time;
+ } VolDetectContext;
+ 
++#define OFFSET(x) offsetof(VolDetectContext, x)
++#define FLAGS AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
++
++static const AVOption volumedetect_options[] = {
++    { "it", "set integration time",  OFFSET(integr_time), AV_OPT_TYPE_INT, {.i64 = 250}, 0, INT_MAX, FLAGS },
++    { NULL },
++};
++
++AVFILTER_DEFINE_CLASS(volumedetect);
++
+ static int query_formats(AVFilterContext *ctx)
+ {
+     static const enum AVSampleFormat sample_fmts[] = {
+@@ -76,7 +89,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *samples)
+         for (i = 0; i < nb_samples; i++)
+             vd->histogram[pcm[i] + 0x8000]++;
+     }
+-
++    vd->sample_rate=inlink->sample_rate;
+     return ff_filter_frame(inlink->dst->outputs[0], samples);
+ }
+ 
+@@ -95,6 +108,7 @@ static void print_stats(AVFilterContext *ctx)
+     VolDetectContext *vd = ctx->priv;
+     int i, max_volume, shift;
+     uint64_t nb_samples = 0, power = 0, nb_samples_shift = 0, sum = 0;
++    int qpl, dif=0;
+     uint64_t histdb[MAX_DB + 1] = { 0 };
+ 
+     for (i = 0; i < 0x10000; i++)
+@@ -127,10 +141,18 @@ static void print_stats(AVFilterContext *ctx)
+     for (i = 0; i < 0x10000; i++)
+         histdb[(int)logdb((i - 0x8000) * (i - 0x8000))] += vd->histogram[i];
+     for (i = 0; i <= MAX_DB && !histdb[i]; i++);
+-    for (; i <= MAX_DB && sum < nb_samples / 1000; i++) {
++    qpl = i;
++    for (; i <= MAX_DB && sum < nb_samples / 200/*1000*/; i++) {
+         av_log(ctx, AV_LOG_INFO, "histogram_%ddb: %"PRId64"\n", i, histdb[i]);
+         sum += histdb[i];
++        if (histdb[i] < vd->integr_time*vd->sample_rate/1000  ) {
++//          if ( (histdb[i+1]/histdb[i]) > dif ) {
++//            dif = (histdb[i+1]/histdb[i]);
++            qpl = i+1; ///????????????????????????????????????????????????
++//          }
++        }
+     }
++    av_log(ctx, AV_LOG_INFO, "qpeak_level: %d dB\n", -qpl);
+ }
+ 
+ static av_cold void uninit(AVFilterContext *ctx)
+@@ -159,6 +181,7 @@ AVFilter ff_af_volumedetect = {
+     .name          = "volumedetect",
+     .description   = NULL_IF_CONFIG_SMALL("Detect audio volume."),
+     .priv_size     = sizeof(VolDetectContext),
++    .priv_class    = &volumedetect_class,
+     .query_formats = query_formats,
+     .uninit        = uninit,
+     .inputs        = volumedetect_inputs,
